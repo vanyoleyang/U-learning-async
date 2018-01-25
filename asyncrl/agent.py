@@ -14,7 +14,7 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 
 
 class QlearningAgent:
-    def __init__(self, session, action_size, h, w, channels, opt=tf.train.AdamOptimizer(1e-4), gamma=0.99, ae):
+    def __init__(self, session, action_size, h, w, channels, opt=tf.train.AdamOptimizer(1e-4), gamma=0.99, ):
 
         """Creates Q-Learning agent
         :param session: tensorflow session
@@ -35,7 +35,7 @@ class QlearningAgent:
             self.reward_nstep_q = tf.placeholder('float32', [None], name='reward')
             self.reward_r = tf.placeholder('float32', [None], name='reward_r')
             q_model, r_model, u_model, self.state, self.q_values, self.r_values, self.u_values \
-                = self._build_model(h, w, channels, ae)
+                = self._build_model(h, w, channels)
             self.q_weights = q_model.trainable_weights
             self.r_weights = r_model.trainable_weights
             self.u_weights = u_model.trainable_weights
@@ -58,7 +58,7 @@ class QlearningAgent:
             self.u_loss = tf.reduce_mean(tf.square(self.u_target - u_value))
             self.q_loss = tf.reduce_mean(tf.square(self.reward_nstep_q - q_value))
             # Define squared mean loss function: (y - y_)^2
-            self.loss = 0.45 * self.q_loss + 0.45 * self.r_loss + 0.1 * self.u_loss
+            self.loss = 1.0 * self.q_loss + 1.0 * self.r_loss + 1.0 * self.u_loss
             # Compute gradients w.r.t. weights
             grads = tf.gradients(self.loss, tf.trainable_variables())
             # grads = tf.gradients(self.loss, [self.q_weights, self.r_weights, self.u_weights])
@@ -155,14 +155,13 @@ class QlearningAgent:
         """Increments global frame counter"""
         self.frame_inc_op.eval(session=self.sess)
 
-    def _build_model(self, h, w, channels, fc3_size=256, ae):
+    def _build_model(self, h, w, channels, fc3_size=256, ):
         """Builds DQN model (Mnih et al., 2015)
         :param h: input layer height
         :param w: input layer width
         :param channels: input layer number of channels
         :param fc3_size: 3rd fully connected layer size (common: 256, 512)"""
-        if ae :
-            print('hello')
+
         state = tf.placeholder('float32', shape=(None, h, w, channels), name='state')
         inputs = Input(shape=(h, w, channels,))
         shared_model = Conv2D(activation="relu", filters=16, kernel_size=(8, 8), padding="same",
@@ -171,18 +170,21 @@ class QlearningAgent:
                        filters=32, activation="relu", padding="same")(shared_model)
         layer_3 = Flatten()(shared_model)
 
-        r_model = Dense(units=fc3_size, activation='relu')(layer_3)
-        r_out = Dense(units=self.action_size, activation='relu')(r_model)
+        r_layer1 = Dense(units=512, activation='relu')(layer_3)
+        r_layer2 = Dense(units=256, activation='relu')(r_layer1)
+        r_out = Dense(units=self.action_size, activation='linear')(r_layer2)
         r_model = Model(inputs=inputs, outputs=r_out)
         rvalues = r_model(state)
 
-        u_model = Dense(units=fc3_size, activation='relu')(layer_3)
-        u_out = Dense(units=self.action_size, activation='relu')(u_model)
+        u_layer1 = Dense(units=512, activation='relu')(layer_3)
+        u_layer2 = Dense(units=256, activation='relu')(u_layer1)
+        u_out = Dense(units=self.action_size, activation='linear')(u_layer2)
         u_model = Model(inputs=inputs, outputs=u_out)
         uvalues = u_model(state)
 
-        q_model = Dense(units=fc3_size, activation='relu')(layer_3)
-        q_out = Dense(units=self.action_size, activation='linear')(q_model)
+        q_layer1 = Dense(units=512, activation='relu')(layer_3)
+        q_layer2 = Dense(units=256, activation='relu')(q_layer1)
+        q_out = Dense(units=self.action_size, activation='linear')(q_layer2)
         q_model = Model(inputs=inputs, outputs=q_out)
         qvalues = q_model(state)
 

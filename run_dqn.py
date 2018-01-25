@@ -18,19 +18,20 @@ from asyncrl.environment import GymWrapperFactory
 # To reproduce minimum epsilon sampling
 random.seed(201)
 # Distribution of epsilon exploration chances (0.1 = 0.4; 0.01 = 0.3; 05 = 0.3)
-EPS_MIN_SAMPLES = 4 * [0.1] + 3 * [0.01] + 3 * [0.5]
+EPS_MIN_SAMPLES = 4 * [0.1] + 3 * [0.01] + 3 * [0.05]
 
 # Configurations
-tf.app.flags.DEFINE_integer("threads", 8, "Number of threads to use")
+tf.app.flags.DEFINE_integer("threads", 12, "Number of threads to use")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Use CPU or GPU for training (by default is GPU)")
 # Training settings
+tf.app.flags.DEFINE_boolean("batch_avg_reward", True, "generate reward batch as episodic avg reward for r_fn and u_fn")
 tf.app.flags.DEFINE_integer("ae", False, "Total frames (across all threads)")
 tf.app.flags.DEFINE_integer("total_frames", 100000000, "Total frames (across all threads)")
 tf.app.flags.DEFINE_integer("update_interval", 40000, "Update target network after X frames")
 tf.app.flags.DEFINE_float("eps_steps", 4000000.0, "Decrease epsilon over X frames")
 tf.app.flags.DEFINE_float("eps_start", 1.0, "Starting epsilon (initial exploration chance)")
 tf.app.flags.DEFINE_float("gamma", 0.99, "Gamma discount factor")
-tf.app.flags.DEFINE_integer("tmax", 200, "Maximum batch size")
+tf.app.flags.DEFINE_integer("tmax", 300, "Maximum batch size")
 tf.app.flags.DEFINE_integer("action_repeat", 4, "Applies last action to X next frames")
 tf.app.flags.DEFINE_integer("memory_len", 4, "Memory length - number of stacked input images")
 # Environment settings
@@ -39,8 +40,9 @@ tf.app.flags.DEFINE_boolean("render", False, "Render frames? Significantly slows
 tf.app.flags.DEFINE_integer("width", 84, "Screen image width")
 tf.app.flags.DEFINE_integer("height", 84, "Screen image height")
 # Logging
-tf.app.flags.DEFINE_integer("test_iter", 100, "Number of test iterations. Used for logging.")
-tf.app.flags.DEFINE_string("logdir", 'logs/Frostbite/logs_uncertainty_0.45r_0.45u_0.1q_no_eps_200step/', "Path to the directory used for checkpoints and loggings")
+tf.app.flags.DEFINE_integer("test_iter", 50, "Number of test iterations. Used for logging.")
+tf.app.flags.DEFINE_string("logdir", 'logs/Frostbite/logs_uncertainty_1.0r_1.0u_1.0q_no_eps_300step_2layers_lin_activ_batch_avg_reward/', "Path to the directory used for checkpoints and loggings")
+# tf.app.flags.DEFINE_string("logdir", 'logs/Frostbite/logs_uncertainty_1.0r_1.0u_1.0q_no_eps_300step_2layers_lin_activ_/', "Path to the directory used for checkpoints and loggings")
 tf.app.flags.DEFINE_integer("log_interval", 50000, "Log and checkpoint every X frame")
 # Evaluation
 tf.app.flags.DEFINE_boolean("eval", False, "Disables training, evaluates agent's performance")
@@ -120,6 +122,7 @@ def test(agent, env, episodes):
     ep_q = []
     ep_u = []
     q_loss, u_loss, r_loss = 0., 0., 0.
+    epsilon = 0.01
     for _ in range(episodes):
         rewards_4r = []
         states = []
@@ -177,11 +180,13 @@ def train_async_dqn(agent, env, sess, agent_summary, saver, thread_idx=0):
     # Training loop:
     while agent.frame < FLAGS.total_frames:
         batch_states, batch_rewards, batch_actions = [], [], []
+        len_step = 0
         if terminal:
             terminal = False
             screen = env.reset_random()
         # Batch update loop:
         while not terminal and len(batch_states) < FLAGS.tmax:
+            len_step += 1
             # Increment shared frame counter
             agent.frame_increment()
             batch_states.append(screen)
@@ -204,11 +209,16 @@ def train_async_dqn(agent, env, sess, agent_summary, saver, thread_idx=0):
                 reward -= 1
             batch_rewards.append(reward)
             batch_actions.append(action_index)
+        if FLAGS.batch_avg_reward:
+            batch_rewards_ = [sum(batch_rewards)/float(len_step)] * len(batch_rewards)
         # Accumulate Rewards for n-step
         rewards_plus = np.asarray(batch_rewards)
         batch_discounted_rewards4Q = discount(rewards_plus, FLAGS.gamma)
         # Apply asynchronous gradient update to shared agent
-        agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, batch_rewards)
+        if FLAGS.batch_avg_reward :
+            agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, batch_rewards_)
+        else :
+            agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, batch_rewards)
         # Anneal epsilon
         epsilon = update_epsilon(agent.frame, FLAGS.eps_steps, eps_min)
         global_epsilons[thread_idx] = epsilon  # Logging
@@ -264,8 +274,7 @@ def run(worker):
                                w=FLAGS.width,
                                channels=FLAGS.memory_len,
                                opt=tf.train.AdamOptimizer(FLAGS.lr),
-                               gamma = FLAGS.gamma,
-                               ae = FLAGS.ae)
+                               gamma = FLAGS.gamma)
         saver = tf.train.Saver(tf.global_variables(), max_to_keep=2)
         sess.run(tf.global_variables_initializer())
         if not os.path.exists(FLAGS.logdir):
