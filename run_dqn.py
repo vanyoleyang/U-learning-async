@@ -18,16 +18,17 @@ from asyncrl.environment import GymWrapperFactory
 # To reproduce minimum epsilon sampling
 random.seed(201)
 # Distribution of epsilon exploration chances (0.1 = 0.4; 0.01 = 0.3; 05 = 0.3)
-EPS_MIN_SAMPLES = 4 * [0.1] + 3 * [0.01] + 3 * [0.05]
+EPS_MIN_SAMPLES = 1 * [0.1] + 1 * [0.01] + 2 * [0.05]
 
 # Configurations
-tf.app.flags.DEFINE_integer("threads", 12, "Number of threads to use")
+tf.app.flags.DEFINE_integer("threads", 8, "Number of threads to use")
 tf.app.flags.DEFINE_boolean("use_cpu", False, "Use CPU or GPU for training (by default is GPU)")
 # Training settings
 tf.app.flags.DEFINE_boolean("batch_avg_reward", True, "generate reward batch as episodic avg reward for r_fn and u_fn")
-tf.app.flags.DEFINE_integer("ae", False, "Total frames (across all threads)")
-tf.app.flags.DEFINE_integer("total_frames", 100000000, "Total frames (across all threads)")
+tf.app.flags.DEFINE_boolean("ae", False, "autoencoder-not using")
+tf.app.flags.DEFINE_integer("total_frames", 50000000, "Total steps (across all threads)")
 tf.app.flags.DEFINE_integer("update_interval", 40000, "Update target network after X frames")
+tf.app.flags.DEFINE_boolean("eps_use", False, "epsilon-greedy use")
 tf.app.flags.DEFINE_float("eps_steps", 4000000.0, "Decrease epsilon over X frames")
 tf.app.flags.DEFINE_float("eps_start", 1.0, "Starting epsilon (initial exploration chance)")
 tf.app.flags.DEFINE_float("gamma", 0.99, "Gamma discount factor")
@@ -35,15 +36,15 @@ tf.app.flags.DEFINE_integer("tmax", 300, "Maximum batch size")
 tf.app.flags.DEFINE_integer("action_repeat", 4, "Applies last action to X next frames")
 tf.app.flags.DEFINE_integer("memory_len", 4, "Memory length - number of stacked input images")
 # Environment settings
-tf.app.flags.DEFINE_string("env", 'Frostbite-v0', "Environment name (available all OpenAI Gym environments)")
+tf.app.flags.DEFINE_string("env", 'Freeway-v0', "Environment name (available all OpenAI Gym environments)")
 tf.app.flags.DEFINE_boolean("render", False, "Render frames? Significantly slows down training process")
 tf.app.flags.DEFINE_integer("width", 84, "Screen image width")
 tf.app.flags.DEFINE_integer("height", 84, "Screen image height")
 # Logging
-tf.app.flags.DEFINE_integer("test_iter", 50, "Number of test iterations. Used for logging.")
-tf.app.flags.DEFINE_string("logdir", 'logs/Frostbite/logs_uncertainty_1.0r_1.0u_1.0q_no_eps_300step_2layers_lin_activ_batch_avg_reward/', "Path to the directory used for checkpoints and loggings")
+tf.app.flags.DEFINE_integer("test_iter", 15, "Number of test iterations. Used for logging.")
+tf.app.flags.DEFINE_string("logdir", 'logs_uncertainty/Freeway/111_no_eps_300step_3layers_batch_episodic_avg_reward/', "Path to the directory used for checkpoints and loggings")
 # tf.app.flags.DEFINE_string("logdir", 'logs/Frostbite/logs_uncertainty_1.0r_1.0u_1.0q_no_eps_300step_2layers_lin_activ_/', "Path to the directory used for checkpoints and loggings")
-tf.app.flags.DEFINE_integer("log_interval", 50000, "Log and checkpoint every X frame")
+tf.app.flags.DEFINE_integer("log_interval", 120000, "Log and checkpoint every X frame")
 # Evaluation
 tf.app.flags.DEFINE_boolean("eval", False, "Disables training, evaluates agent's performance")
 tf.app.flags.DEFINE_string("evaldir", 'eval/', "Path to the evaluation logging")
@@ -66,8 +67,11 @@ def update_epsilon(frames, eps_steps, eps_min):
     :type frames: float
     :type eps_steps: int
     :type eps_min: float"""
-    # eps = FLAGS.eps_start - (frames / eps_steps) * (FLAGS.eps_start - eps_min)
-    return eps_min # eps if eps > eps_min else eps_min
+    if FLAGS.eps_use :
+        eps = FLAGS.eps_start - (frames / eps_steps) * (FLAGS.eps_start - eps_min)
+        return eps if eps > eps_min else eps_min
+    else : return eps_min
+
 
 
 def evaluate():
@@ -111,7 +115,7 @@ def evaluate():
         print('Average reward per episode: %0.4f' % (total_reward / FLAGS.eval_iter))
 
 
-def test(agent, env, episodes):
+def test(agent, env, episodes, while_training = True):
     """Tests agent's performance on given number of games
     :param agent: agent to test
     :param env: environment
@@ -122,15 +126,16 @@ def test(agent, env, episodes):
     ep_q = []
     ep_u = []
     q_loss, u_loss, r_loss = 0., 0., 0.
-    epsilon = 0.01
     for _ in range(episodes):
-        rewards_4r = []
-        states = []
-        actions = []
+        rewards_4r, states, actions = [], [], []
         ep_reward = 0
         s = env.reset()
         terminal = False
+        len_step = 0
         while not terminal:
+            if while_training:
+                agent.frame_increment()
+            len_step += 1
             states.append(s)
             q_values, u_values = agent.predict_rewards_n_uncertainty(s)
             action = np.argmax(q_values)
@@ -141,13 +146,23 @@ def test(agent, env, episodes):
             rewards_4r.append(r)
             ep_reward += r
         rewards_4q = discount(rewards_4r, 0.99)
-        q_l, u_l, r_l = agent.get_loss_values(np.vstack(states), actions, rewards_4q, rewards_4r)
+        if while_training :
+            if FLAGS.batch_avg_reward:
+                episodic_rewards_4r = episodic_average(rewards_4r)
+            q_l, u_l, r_l = agent.get_loss_values_while_training(np.vstack(states), actions, rewards_4q, episodic_rewards_4r)
+        else :
+            q_l, u_l, r_l = agent.get_loss_values(np.vstack(states), actions, rewards_4q, rewards_4r)
         q_loss += q_l
         u_loss += u_l
         r_loss += r_l
         ep_rewards.append(ep_reward)
     return ep_rewards, ep_q, ep_u, q_loss/episodes, u_loss/episodes, r_loss/episodes
 
+def episodic_average(x) :
+    new_list = []
+    for i in range(len(x)) :
+        new_list.append(sum(x[i:])/float(len(x)-(i)))
+    return new_list
 
 def discount(x, gamma):
     return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
@@ -169,6 +184,12 @@ def train_async_dqn(agent, env, sess, agent_summary, saver, thread_idx=0):
 
     def discount(x, gamma):
         return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
+
+    def episodic_average(x) :
+        new_list = []
+        for i in range(len(x)) :
+            new_list.append(sum(x[i:])/float(len(x)-(i)))
+        return new_list
 
     global global_epsilons
     eps_min = random.choice(EPS_MIN_SAMPLES)
@@ -201,22 +222,20 @@ def train_async_dqn(agent, env, sess, agent_summary, saver, thread_idx=0):
             screen, reward, terminal, info_ = env.step(action_index)
             # print(info_)
             reward = np.clip(reward, -1, 1)
-            # one-step Q-Learning: add discounted expected future reward
-            if len(batch_states) == (FLAGS.tmax-1):
-                if not terminal :
-                    reward += FLAGS.gamma * agent.predict_target(screen)
-            if terminal and FLAGS.env == 'MontezumaRevenge-v0' and info_['ale.lives'] != 5:
-                reward -= 1
+            # n-step Q-Learning
             batch_rewards.append(reward)
             batch_actions.append(action_index)
+        # last reward to be discounted value for q updates
         if FLAGS.batch_avg_reward:
-            batch_rewards_ = [sum(batch_rewards)/float(len_step)] * len(batch_rewards)
+            ep_batch_avg_rewards_ = episodic_average(batch_rewards)
+        if len(batch_states) == (FLAGS.tmax - 1) and not terminal:
+            batch_rewards[-1] += FLAGS.gamma * agent.predict_target(screen)
         # Accumulate Rewards for n-step
         rewards_plus = np.asarray(batch_rewards)
         batch_discounted_rewards4Q = discount(rewards_plus, FLAGS.gamma)
         # Apply asynchronous gradient update to shared agent
         if FLAGS.batch_avg_reward :
-            agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, batch_rewards_)
+            agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, ep_batch_avg_rewards_)
         else :
             agent.train(np.vstack(batch_states), batch_actions, batch_discounted_rewards4Q, batch_rewards)
         # Anneal epsilon
@@ -231,7 +250,15 @@ def train_async_dqn(agent, env, sess, agent_summary, saver, thread_idx=0):
                 last_logging = agent.frame
                 saver.save(sess, os.path.join(FLAGS.logdir, "sess.ckpt"), global_step=agent.frame)
                 print('Session saved to %s' % FLAGS.logdir)
-                episode_rewards, episode_q, episode_u, q_loss, u_loss, r_loss = test(agent, env, episodes=FLAGS.test_iter)
+                if FLAGS.env != "Solaris-v0":
+                    episode_rewards, episode_q, episode_u, q_loss, u_loss, r_loss = test(agent, env,
+                                                                                         episodes=FLAGS.test_iter,
+                                                                                         while_training=True)
+                else :
+                    print('solaris testing....')
+                    episode_rewards, episode_q, episode_u, q_loss, u_loss, r_loss = test(agent, env,
+                                                                                         episodes=15,
+                                                                                         while_training=True)
                 avg_r = np.mean(episode_rewards)
                 avg_q = np.mean(episode_q)
                 avg_u = np.mean(episode_u)
@@ -266,8 +293,9 @@ def run(worker):
                                      w=FLAGS.width,
                                      h=FLAGS.height)
         envs.append(env)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.4)
 
-    with tf.Session() as sess:
+    with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         agent = QlearningAgent(session=sess,
                                action_size=envs[0].action_size,
                                h=FLAGS.height,

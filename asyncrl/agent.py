@@ -120,6 +120,24 @@ class QlearningAgent:
         })
         return q_loss, u_loss, r_loss
 
+
+    def get_loss_values_while_training(self,state, action, rewards_4q, rewards_4r):
+        for_u_t = self.immediate_reward_err.eval(session=self.sess, feed_dict={
+            self.state: state,
+            self.action: action,
+            self.reward_nstep_q: rewards_4q,
+            self.reward_r: rewards_4r,
+        })
+        for_u_t = self.discount(for_u_t, self.gamma)
+        q_loss, u_loss, r_loss, _ = self.sess.run([self.q_loss, self.u_loss, self.r_loss, self.train_op], feed_dict={
+            self.state: state,
+            self.action: action,
+            self.reward_nstep_q: rewards_4q,
+            self.reward_r: rewards_4r,
+            self.u_target: for_u_t
+        })
+        return q_loss, u_loss, r_loss
+
     def predict_target(self, state):
         """Predicts maximum action's reward for given state with target network
         :param state: array with shape=[batch_size, num_channels, width, height]
@@ -172,19 +190,22 @@ class QlearningAgent:
 
         r_layer1 = Dense(units=512, activation='relu')(layer_3)
         r_layer2 = Dense(units=256, activation='relu')(r_layer1)
-        r_out = Dense(units=self.action_size, activation='linear')(r_layer2)
+        r_layer3 = Dense(units=256, activation='relu')(r_layer2)
+        r_out = Dense(units=self.action_size, activation='relu')(r_layer3)
         r_model = Model(inputs=inputs, outputs=r_out)
         rvalues = r_model(state)
 
         u_layer1 = Dense(units=512, activation='relu')(layer_3)
         u_layer2 = Dense(units=256, activation='relu')(u_layer1)
-        u_out = Dense(units=self.action_size, activation='linear')(u_layer2)
+        u_layer3 = Dense(units=256, activation='relu')(u_layer2)
+        u_out = Dense(units=self.action_size, activation='relu')(u_layer3)
         u_model = Model(inputs=inputs, outputs=u_out)
         uvalues = u_model(state)
 
         q_layer1 = Dense(units=512, activation='relu')(layer_3)
         q_layer2 = Dense(units=256, activation='relu')(q_layer1)
-        q_out = Dense(units=self.action_size, activation='linear')(q_layer2)
+        q_layer3 = Dense(units=256, activation='relu')(q_layer2)
+        q_out = Dense(units=self.action_size, activation='linear')(q_layer3)
         q_model = Model(inputs=inputs, outputs=q_out)
         qvalues = q_model(state)
 
